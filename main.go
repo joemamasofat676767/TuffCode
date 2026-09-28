@@ -4,12 +4,12 @@ import (
 	"os"
 	"io"
 	"fmt"
+	"time"
 	"slices"
 	"errors"
 	"os/exec"
 	"strings"
 	"path/filepath"
-	// "github.com/creack/pty"
 	"github.com/rivo/tview"
 	"github.com/gdamore/tcell/v2"
 	"github.com/blacknon/tvxterm"
@@ -17,6 +17,7 @@ import (
 
 func main(){
 	logFile, err := os.OpenFile(".LOGS", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
+	keyLogsFile, err := os.OpenFile(".KEYLOGS", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
 	if err != nil{
 		panic(err)
 	}
@@ -90,12 +91,16 @@ func main(){
 	fmt.Fprintf(logFile, "backend: %v\n", backend)
 	terminal.Attach(backend)
 
-	// specialKeys := map[string]string{"Enter": "\n", "Tab": "\t", "Up": "\x1b[A", "Down": "\x1b[B", "Right": "\x1b[C", "Left": "\x1b[D", "Backspace": "\x7f", "Ctrl+C": "\x03"}
-
+	// historyIndex := 0
+	var history [][]any
+	row, col, toRow, toCol := textEditor.GetCursor()
+	historyBuffer := [5]any{row, col, toRow, toCol, ""}
+	historyTimeBuffer := [2]time.Time{time.Now(), time.Now()}
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey{
-		if event.Key() == tcell.KeyCtrlQ{
-			app.Stop()
-			return nil
+		if event.Key() == tcell.KeyRune{
+			fmt.Fprintf(keyLogsFile, "key: %v\n", string(event.Rune()))
+		}else{
+			fmt.Fprintf(keyLogsFile, "key: %v\n", tcell.KeyNames[event.Key()])
 		}
 		if event.Key() == tcell.KeyCtrlT{
 			if mode == "e"{
@@ -109,36 +114,82 @@ func main(){
 			}
 			return nil
 		}
-		if event.Key() == tcell.KeyCtrlC{
-			if textEditor.HasSelection(){
-				selectedText, _, _ := textEditor.GetSelection()
-				copyCommand1, copyCommand2 := exec.Command("cat"), exec.Command("termux-clipboard-set")
-				copyCommand1.Stdin = strings.NewReader(selectedText)
-				r, w := io.Pipe()
-				copyCommand1.Stdout = w
-				copyCommand2.Stdin = r
-				if copyCommand1.Start() ; err != nil{
-					fmt.Fprintf(logFile, "error: %v\n", err)
-				}
-				if copyCommand2.Start() ; err != nil{
-					fmt.Fprintf(logFile, "error: %v\n", err)
-				}
-				go func(){
-					defer r.Close()
-					copyCommand1.Wait()
-				}()
-			}
+		if event.Key() == tcell.KeyCtrlQ{
+			app.Stop()
 			return nil
 		}
-		if event.Key() == tcell.KeyCtrlV{
-			pasteCmd := exec.Command("sh", "-c", "termux-clipboard-get")
-			pasteTextB, err := pasteCmd.Output()
-			if err != nil{
-				fmt.Fprintf(logFile, "error: %v\n", err)
+
+		if mode == "e"{
+			row, col, toRow, toCol = textEditor.GetCursor()
+			if historyBuffer[2].(int) <= row{
+				historyBuffer[0] = row
 			}
-			pasteText := string(pasteTextB)
-			if paste := textEditor.PasteHandler() ; paste != nil{
-				paste(pasteText, nil)
+			if historyBuffer[3].(int) <= col{
+				historyBuffer[1] = col
+			}
+			historyTimeBuffer[0] = historyTimeBuffer[1]
+			historyTimeBuffer[1] = time.Now()
+			if event.Key() == tcell.KeyRune{
+				historyBuffer[4] = historyBuffer[4].(string) + string(event.Rune())
+				if timeDiff := historyTimeBuffer[1].Sub(historyTimeBuffer[0]).Milliseconds(); timeDiff >= 750{
+					fmt.Fprintf(logFile, "history(time): %v\n", historyBuffer)
+					history = append(history, historyBuffer[:])
+					historyBuffer = [5]any{row, col, row, col, ""}
+				}
+			}else if event.Key() == tcell.KeyBackspace{
+				if historyBuffer[4] != ""{
+					fmt.Fprintf(logFile, "history(backspace): %v\n", historyBuffer)
+					history = append(history, historyBuffer[:])
+					historyBuffer = [5]any{row, col, row, col, ""}
+				}
+			}else if event.Key() == tcell.KeyTab{
+				historyBuffer[4] = historyBuffer[4].(string) + "\t"
+					if timeDiff := historyTimeBuffer[1].Sub(historyTimeBuffer[0]).Milliseconds(); timeDiff >= 1000{
+						fmt.Fprintf(logFile, "history(time): %v\n", historyBuffer)
+						history = append(history, historyBuffer[:])
+						historyBuffer = [5]any{row, col, row, col, ""}
+					}
+			}else if event.Key() == tcell.KeyCtrlC{
+				if textEditor.HasSelection(){
+					selectedText, _, _ := textEditor.GetSelection()
+					copyCommand1, copyCommand2 := exec.Command("cat"), exec.Command("termux-clipboard-set")
+					copyCommand1.Stdin = strings.NewReader(selectedText)
+					r, w := io.Pipe()
+					copyCommand1.Stdout = w
+					copyCommand2.Stdin = r
+					if copyCommand1.Start() ; err != nil{
+						fmt.Fprintf(logFile, "error: %v\n", err)
+					}
+					if copyCommand2.Start() ; err != nil{
+						fmt.Fprintf(logFile, "error: %v\n", err)
+					}
+					go func(){
+						defer r.Close()
+						copyCommand1.Wait()
+					}()
+				}
+				return nil
+			}else if event.Key() == tcell.KeyCtrlV{
+				pasteCmd := exec.Command("sh", "-c", "termux-clipboard-get")
+				pasteTextB, err := pasteCmd.Output()
+				if err != nil{
+					fmt.Fprintf(logFile, "error: %v\n", err)
+				}
+				pasteText := string(pasteTextB)
+				if paste := textEditor.PasteHandler() ; paste != nil{
+					paste(pasteText, nil)
+				}
+				row, col, _, _ = textEditor.GetCursor()
+				historyBuffer = [5]any{historyBuffer[0], historyBuffer[1], row, col, pasteText}
+				fmt.Fprintf(logFile, "history(paste): %v\n", historyBuffer)
+				history = append(history, historyBuffer[:])
+				historyBuffer = [5]any{row, col, toRow, toCol, ""}
+			}else{
+				if historyBuffer[4] != ""{
+					fmt.Fprintf(logFile, "history(special key): %v\n", historyBuffer)
+					history = append(history, historyBuffer[:])
+					historyBuffer = [5]any{row, col, toRow, toCol, ""}
+				}
 			}
 		}
 		return event

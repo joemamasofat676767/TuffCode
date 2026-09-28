@@ -1,2 +1,7 @@
 app run
-backend: &{0x702ef80018 0x702eff2000 {{} {{} 0} {{} {0 0}}}}
+backend: &{0x779d386008 0x779d3ea000 {{} {{} 0} {{} {0 0}}}}
+history(paste): [0 0 4 36 start := 0
+				for i := 0; i < lh[1].(int); i++{
+					start += len(textEditor_text[i]) + 1
+				}
+				start += lh[0].(int)]
