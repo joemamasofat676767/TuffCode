@@ -4,7 +4,6 @@ import (
 	"os"
 	"io"
 	"fmt"
-	"time"
 	"slices"
 	"errors"
 	"os/exec"
@@ -18,6 +17,7 @@ import (
 func main(){
 	logFile, err := os.OpenFile(".LOGS", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
 	keyLogsFile, err := os.OpenFile(".KEYLOGS", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
+	var dir_temp string
 	if err != nil{
 		panic(err)
 	}
@@ -33,7 +33,6 @@ func main(){
 		}
 		fmt.Println(files)
 		fmt.Println("choose path")
-		var dir_temp string
 		_, err = fmt.Scan(&dir_temp)
 		info, err := os.Stat(strings.Join(append(dir, dir_temp), "/"))
 		if err != nil{
@@ -91,11 +90,6 @@ func main(){
 	fmt.Fprintf(logFile, "backend: %v\n", backend)
 	terminal.Attach(backend)
 
-	// historyIndex := 0
-	var history [][]any
-	row, col, toRow, toCol := textEditor.GetCursor()
-	historyBuffer := [5]any{row, col, toRow, toCol, ""}
-	historyTimeBuffer := [2]time.Time{time.Now(), time.Now()}
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey{
 		if event.Key() == tcell.KeyRune{
 			fmt.Fprintf(keyLogsFile, "key: %v\n", string(event.Rune()))
@@ -118,38 +112,15 @@ func main(){
 			app.Stop()
 			return nil
 		}
+		if event.Key() == tcell.KeyCtrlS{
+			err := os.WriteFile(dir_temp, []byte(textEditor.GetText()), 0644)
+			if err != nil{
+				fmt.Fprintf(logFile, "saving error: %v\n", err)
+			}
+		}
 
 		if mode == "e"{
-			row, col, toRow, toCol = textEditor.GetCursor()
-			if historyBuffer[2].(int) <= row{
-				historyBuffer[0] = row
-			}
-			if historyBuffer[3].(int) <= col{
-				historyBuffer[1] = col
-			}
-			historyTimeBuffer[0] = historyTimeBuffer[1]
-			historyTimeBuffer[1] = time.Now()
-			if event.Key() == tcell.KeyRune{
-				historyBuffer[4] = historyBuffer[4].(string) + string(event.Rune())
-				if timeDiff := historyTimeBuffer[1].Sub(historyTimeBuffer[0]).Milliseconds(); timeDiff >= 750{
-					fmt.Fprintf(logFile, "history(time): %v\n", historyBuffer)
-					history = append(history, historyBuffer[:])
-					historyBuffer = [5]any{row, col, row, col, ""}
-				}
-			}else if event.Key() == tcell.KeyBackspace{
-				if historyBuffer[4] != ""{
-					fmt.Fprintf(logFile, "history(backspace): %v\n", historyBuffer)
-					history = append(history, historyBuffer[:])
-					historyBuffer = [5]any{row, col, row, col, ""}
-				}
-			}else if event.Key() == tcell.KeyTab{
-				historyBuffer[4] = historyBuffer[4].(string) + "\t"
-					if timeDiff := historyTimeBuffer[1].Sub(historyTimeBuffer[0]).Milliseconds(); timeDiff >= 1000{
-						fmt.Fprintf(logFile, "history(time): %v\n", historyBuffer)
-						history = append(history, historyBuffer[:])
-						historyBuffer = [5]any{row, col, row, col, ""}
-					}
-			}else if event.Key() == tcell.KeyCtrlC{
+			if event.Key() == tcell.KeyCtrlC{
 				if textEditor.HasSelection(){
 					selectedText, _, _ := textEditor.GetSelection()
 					copyCommand1, copyCommand2 := exec.Command("cat"), exec.Command("termux-clipboard-set")
@@ -179,16 +150,37 @@ func main(){
 				if paste := textEditor.PasteHandler() ; paste != nil{
 					paste(pasteText, nil)
 				}
-				row, col, _, _ = textEditor.GetCursor()
-				historyBuffer = [5]any{historyBuffer[0], historyBuffer[1], row, col, pasteText}
-				fmt.Fprintf(logFile, "history(paste): %v\n", historyBuffer)
-				history = append(history, historyBuffer[:])
-				historyBuffer = [5]any{row, col, toRow, toCol, ""}
-			}else{
-				if historyBuffer[4] != ""{
-					fmt.Fprintf(logFile, "history(special key): %v\n", historyBuffer)
-					history = append(history, historyBuffer[:])
-					historyBuffer = [5]any{row, col, toRow, toCol, ""}
+				return nil
+			}else if event.Modifiers() == tcell.ModAlt{
+				row, col, _, _ := textEditor.GetCursor()
+				editorText := strings.Split(textEditor.GetText(), "\n")
+				if event.Key() == tcell.KeyUp{
+					if row <= 0{
+						return nil
+					}
+					textEditor.SetText(strings.Join(editorText[:row-1], "\n")+"\n"+editorText[row]+"\n"+editorText[row-1]+"\n"+strings.Join(editorText[row+1:], "\n")+"\n", false)
+					textEditor.Select(col, col)
+					for i := 0; i < row-1; i++{
+						textEditor.InputHandler()(
+							tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone),
+							func(p tview.Primitive){},
+						)
+					}
+					return nil
+				}
+				if event.Key() == tcell.KeyDown{
+					if row >= len(editorText)-2{
+						return nil
+					}
+					textEditor.SetText(strings.Join(editorText[:row], "\n")+"\n"+editorText[row+1]+"\n"+editorText[row]+"\n"+strings.Join(editorText[row+2:], "\n")+"\n", false)
+					textEditor.Select(col, col)
+					for i := 0; i < row + 1; i++{
+						textEditor.InputHandler()(
+							tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone),
+							func(p tview.Primitive){},
+						)
+					}
+					return nil
 				}
 			}
 		}
